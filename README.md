@@ -15,6 +15,7 @@ Needs `uv`. Dependencies: `pyyaml` and `jq` (inline in the script, `uv` installs
 
 - **Import**: spec URL, file or pasted text. JSON and YAML, OpenAPI 3 and Swagger 2.
 - **Import again**: use the same collection name. The spec part is replaced. Saved path/query/header values and bodies are kept, matched by `operationId` (or method + path). Requests you added with `+ Request` are kept. Requests removed from the spec are dropped.
+- **Request filter**: the field above the request list does fuzzy search on method, path, summary and `operationId`. Characters must appear in order, with gaps allowed, so `usrid` finds `/users/{id}`. Separate terms with spaces to match across fields (`get pets`). Best matches come first in each tag, and matched characters are highlighted.
 - **Send**: `Ctrl/Cmd+Enter`. The server makes the call, so there is no CORS. Redirects are not followed.
 - **Response**: JSON is highlighted, and objects and arrays fold with the arrow next to them.
 - **Filter**: the field above a JSON response takes a [jq](https://jqlang.org/manual/) filter, for example `.items[].id`, and runs as you type. It stays on the request while the app is open and applies again on each send. A filter is stopped after 5 seconds or 10 MB of output.

@@ -4,6 +4,9 @@
 # ///
 import base64
 import json
+import re
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -293,6 +296,54 @@ def test_jq_timeout_kills_endless_filter():
     r = coolapi.run_jq({"filter": "def f: f; f", "text": "1"}, timeout=0.5)
     assert r == {"out": [], "error": "filter timed out after 0.5 s"}
     assert time.time() - t < 3
+
+
+SIDEBAR_FUZZY_CHECKS = r"""
+const assert = require('node:assert');
+const req = (method, path, summary) => ({ method, path, summary });
+const score = (q, t) => fuzzy(q, t).score;
+
+assert.deepEqual(fuzzy('usrid', '/users/{id}').pos, [1, 2, 4, 8, 9]);
+assert.equal(fuzzy('uesrs', '/users/{id}'), null);
+assert.equal(fuzzy('x', ''), null);
+assert.deepEqual(fuzzy('USERS', '/users').pos, fuzzy('users', '/USERS').pos);
+
+assert(score('pet', 'a/pet') > score('pet', 'a/p-e-t'));  // exact beats scattered
+assert(score('pet', '/pet/x') > score('pet', '/carpet/x'));  // word start beats mid-word
+assert(score('id', 'getId') > score('id', 'grid'));  // camelCase hump is a word start
+assert.deepEqual(fuzzy('pet', 'p e /pet').pos, [5, 6, 7]);  // a later start can be better
+
+const m = matchReq(['get', 'pets'], 'listPets', req('GET', '/pets'));
+assert.deepEqual(m.marks.method, [0, 1, 2]);
+assert.deepEqual(m.marks.path, [1, 2, 3, 4]);
+assert.equal(matchReq(['get', 'nope'], 'listPets', req('GET', '/pets')), null);  // all tokens must match
+assert.equal(matchReq(['undefined'], 'k', req('GET', '/pets')), null);  // missing summary is not text
+assert.deepEqual(matchReq(['listp'], 'listPets', req('GET', '/x', 'Other')).marks.key, [0, 1, 2, 3, 4]);
+assert.deepEqual(matchReq([], 'k', req('GET', '/x')), { score: 0, marks: { path: [], summary: [], method: [], key: [] } });
+assert.deepEqual(matchReq(['pe', 'ts'], 'k', req('GET', '/pets')).marks.path, [1, 2, 3, 4]);  // tokens share a field
+
+assert.equal(hl('/a<b&c', []), '/a&lt;b&amp;c');
+assert.equal(hl('/a<b&c', [2, 4]), '/a<mark>&lt;</mark>b<mark>&amp;</mark>c');
+assert.equal(hl('abcd', [1, 2]), 'a<mark>bc</mark>d');  // one mark per run
+assert.equal(hl('abcd', [2, 1, 2]), 'a<mark>bc</mark>d');  // order and repeats don't matter
+assert.equal(hl('abc'), 'abc');
+assert.equal(hl(undefined), '');
+
+assert.deepEqual(fuzzy('x', 'İx').pos, [1]);  // positions stay aligned when lowercasing changes length
+assert.equal(hl('İx', fuzzy('x', 'İx').pos), 'İ<mark>x</mark>');
+"""
+
+
+def test_sidebar_fuzzy():
+    node = shutil.which("node")
+    if not node:
+        print("skip test_sidebar_fuzzy: node is not installed")
+        return
+    html = (Path(__file__).parent / "index.html").read_text(encoding="utf-8")
+    esc = re.search(r"^const esc = .*$", html, re.M).group()
+    block = re.search(r"// fuzzy:start\n.*// fuzzy:end", html, re.S).group()
+    p = subprocess.run([node, "-e", f"{esc}\n{block}\n{SIDEBAR_FUZZY_CHECKS}"], capture_output=True, text=True)
+    assert p.returncode == 0, p.stderr
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@
 <title>CoolAPI</title>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%233b82f6'/%3E%3Cpath d='M18 5 9 18h6l-1 9 9-13h-6z' fill='%23fff'/%3E%3C/svg%3E">
 <style>
-  :root { color-scheme: light dark; --bd: #8884; --mut: #888; --ok: #2a9d4b; --warn: #d98e04; --bad: #d64545; --acc: #3b82f6;
+  :root { color-scheme: light dark; --bd: #8884; --mut: #888; --ok: #2a9d4b; --warn: #d98e04; --bad: #d64545; --acc: #3b82f6; --match: #d98e0455;
     --j-key: #0b5cad; --j-str: #1a7f37; --j-num: #b35900; --j-bool: #8250df; --j-null: #6e7781; }
   @media (prefers-color-scheme: dark) {
     :root { --j-key: #79b8ff; --j-str: #7ee787; --j-num: #ffa657; --j-bool: #d2a8ff; --j-null: #8b949e; }
@@ -31,6 +31,7 @@
   .it:hover { background: #8881; }
   .it.sel { background: #3b82f622; }
   .it small { display: block; color: var(--mut); overflow: hidden; text-overflow: ellipsis; }
+  .it mark { background: var(--match); color: inherit; border-radius: 2px; }
   .m { font: 600 10px monospace; display: inline-block; width: 46px; }
   .GET { color: var(--ok); } .POST { color: var(--warn); } .PUT { color: var(--acc); }
   .DELETE { color: var(--bad); } .PATCH { color: #a855f7; }
@@ -129,6 +130,64 @@ const enc = s => String(s).split(/(\{\{[^}]+\}\})/).map((x, i) => i % 2 ? x : pc
 const lsGet = k => { try { return localStorage.getItem(k) } catch { return null } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, v) } catch {} };
 
+// fuzzy:start
+// per code unit: lowercasing a whole string can change its length ('İ') and shift highlight positions
+const fold = s => s.split('').map(c => c.toLowerCase()[0]);
+const wordStart = (s, i) => i === 0 || /[\/\-_{.\s]/.test(s[i - 1]) || (/[a-z]/.test(s[i - 1]) && /[A-Z]/.test(s[i]));
+
+// characters of q in order, gaps allowed. Tries every start so an exact substring is found as one run.
+function fuzzy(q, text) {
+  const a = fold(q), b = fold(text);
+  let best = null;
+  for (let st = b.indexOf(a[0]); st >= 0; st = b.indexOf(a[0], st + 1)) {
+    const pos = [st];
+    for (let i = 1, j = st + 1; i < a.length; j++) {
+      if (j >= b.length) return best;  // later starts have even less text left
+      if (b[j] === a[i]) { pos.push(j); i++; }
+    }
+    let score = st === 0 ? 2 : 0;
+    pos.forEach((p, i) => {
+      score += 1 + (wordStart(text, p) ? 3 : 0);
+      if (i) score += p === pos[i - 1] + 1 ? 4 : pos[i - 1] + 1 - p;
+    });
+    if (!best || score > best.score) best = { score, pos };
+  }
+  return best;
+}
+
+// every token must match; each one marks its best field. Bonus order breaks ties between fields.
+const FIELDS = [['path', 3], ['summary', 2], ['method', 1], ['key', 0]];
+function matchReq(tokens, k, r) {
+  const text = { path: r.path, summary: r.summary, method: r.method, key: k };
+  const marks = { path: [], summary: [], method: [], key: [] };
+  let score = 0;
+  for (const t of tokens) {
+    let best = null, at = null;
+    for (const [f, bonus] of FIELDS) {
+      const m = fuzzy(t, String(text[f] ?? ''));
+      if (m && (!best || m.score + bonus > best.score)) { best = { score: m.score + bonus, pos: m.pos }; at = f; }
+    }
+    if (!best) return null;
+    score += best.score;
+    marks[at].push(...best.pos);
+  }
+  return { score, marks };
+}
+
+// escape each piece after splitting, so entities like &amp; don't shift positions
+function hl(text, pos = []) {
+  text = String(text ?? '');
+  const on = new Set(pos);
+  let out = '';
+  for (let i = 0, j; i < text.length; i = j) {
+    for (j = i; j < text.length && on.has(j) === on.has(i);) j++;
+    const s = esc(text.slice(i, j));
+    out += on.has(i) ? `<mark>${s}</mark>` : s;
+  }
+  return out;
+}
+// fuzzy:end
+
 async function api(method, url, body) {
   const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const j = await r.json();
@@ -178,15 +237,21 @@ async function loadEnv() {
 }
 
 function renderList() {
-  const f = $('#filter').value.toLowerCase();
+  const tokens = $('#filter').value.trim().split(/\s+/).filter(Boolean);
   const groups = {};
   for (const [k, r] of Object.entries(col.requests)) {
-    if (f && !`${k} ${r.method} ${r.path} ${r.summary}`.toLowerCase().includes(f)) continue;
-    (groups[r.tag || 'other'] ||= []).push([k, r]);
+    const m = matchReq(tokens, k, r);
+    if (m) (groups[r.tag || 'other'] ||= []).push([k, r, m]);
   }
-  $('#list').innerHTML = Object.entries(groups).map(([t, items]) =>
-    `<div class="tag">${esc(t)}</div>` + items.map(([k, r]) =>
-      `<div class="it ${k === cur ? 'sel' : ''}" data-k="${esc(k)}"><span class="m ${r.method}">${r.method}</span>${esc(r.path)}<small>${esc(r.summary || k)}</small></div>`).join('')).join('');
+  // sort is stable and every score is 0 with no filter, so spec order is kept then
+  for (const items of Object.values(groups)) items.sort((a, b) => b[2].score - a[2].score);
+  const sorted = Object.entries(groups).sort(([, a], [, b]) => b[0][2].score - a[0][2].score);
+  $('#list').innerHTML = sorted.map(([t, items]) =>
+    `<div class="tag">${esc(t)}</div>` + items.map(([k, r, { marks }]) => {
+      // show the key if that's what matched, so every match has a visible highlight
+      const showKey = !r.summary || (marks.key.length && !marks.summary.length);
+      return `<div class="it ${k === cur ? 'sel' : ''}" data-k="${esc(k)}"><span class="m ${r.method}">${hl(r.method, marks.method)}</span>${hl(r.path, marks.path)}<small>${showKey ? hl(k, marks.key) : hl(r.summary, marks.summary)}</small></div>`;
+    }).join('')).join('');
 }
 
 function kv(r, sec, decl, fixed) {
