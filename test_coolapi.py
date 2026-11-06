@@ -124,6 +124,26 @@ def test_security_and_yaml():
     assert parse_spec("openapi: 3.0.0\npaths: {}")["openapi"] == "3.0.0"
 
 
+def test_yaml_unquoted_dates_stay_strings():
+    spec = parse_spec("""
+openapi: 3.0.0
+paths:
+  /a:
+    patch:
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                day: {type: string, format: date, example: 2000-01-23}
+                at: {type: string, format: date-time, example: 2021-01-01T00:00:00.000+0000}
+""")
+    assert json.loads(spec_ops(spec)["PATCH /a"]["body_default"]) == {
+        "day": "2000-01-23",
+        "at": "2021-01-01T00:00:00.000+0000",
+    }
+
+
 def test_security_oauth2_cc_seeds_auth():
     spec = {"openapi": "3.0.0", "components": {"securitySchemes": {"o": {"type": "oauth2", "flows": {
         "clientCredentials": {"tokenUrl": "https://t/token", "scopes": {"a": "", "b": ""}}}}}}}

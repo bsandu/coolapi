@@ -32,11 +32,21 @@ VAR = re.compile(r"\{\{\s*([\w.-]+)\s*\}\}")
 # --- spec parsing ---
 
 
+class SpecLoader(yaml.SafeLoader):
+    """SafeLoader that keeps unquoted dates as strings, as in a JSON spec."""
+
+
+SpecLoader.yaml_implicit_resolvers = {
+    k: [(tag, rx) for tag, rx in v if tag != "tag:yaml.org,2002:timestamp"]
+    for k, v in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+
+
 def parse_spec(text):
     try:
         spec = json.loads(text)
     except ValueError:
-        spec = yaml.safe_load(text)
+        spec = yaml.load(text, Loader=SpecLoader)
     if not isinstance(spec, dict) or not ("openapi" in spec or "swagger" in spec):
         raise ValueError("not an OpenAPI/Swagger spec")
     return spec
