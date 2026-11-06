@@ -1,11 +1,12 @@
 #!/usr/bin/env -S uv run
 # /// script
-# dependencies = ["pyyaml"]
+# dependencies = ["jq", "pyyaml"]
 # ///
 import base64
 import json
 import tempfile
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -242,6 +243,36 @@ def test_history_redacts_and_caps():
     add_history("c", {**e, "id": "2"})
     assert [x["id"] for x in read_history("c")] == [e["id"], "2"]
     assert read_history("nope") == []
+
+
+def test_jq_outputs():
+    doc = '{"items":[{"a":1},{"a":2}],"s":"é\u2028<b>"}'
+    jq = lambda f, text=doc: coolapi.run_jq({"filter": f, "text": text})
+    assert jq(".items | length") == {"out": ["2"], "error": None}
+    assert jq(".items[]") == {"out": ['{"a":1}', '{"a":2}'], "error": None}  # one line per output
+    assert jq("empty") == {"out": [], "error": None}
+    assert jq("-1") == {"out": ["-1"], "error": None}  # not read as a command line option
+    assert json.loads(jq(".s")["out"][0]) == "é\u2028<b>"  # U+2028 must not split the line
+    assert [json.loads(x) for x in jq("nan, infinite")["out"]] == [None, 1.7976931348623157e308]
+
+
+def test_jq_errors():
+    jq = lambda f, text='{"items":[1],"s":"x"}': coolapi.run_jq({"filter": f, "text": text})
+    assert "syntax error" in jq(".items[")["error"]
+    assert jq(".s.y")["error"] == 'Cannot index string with string ("y")'
+    partial = jq('.items[], error("boom")')  # outputs before the error are kept
+    assert partial == {"out": ["1"], "error": "boom"}
+    assert "parse error" in jq(".", "not json")["error"]
+    assert "PATH" not in json.loads(jq("$ENV | keys")["out"][0])  # server env is not readable
+    big = jq('repeat("x" * 1000000)')  # stopped at the cap, partial output dropped
+    assert big == {"out": [], "error": "filter output is over 10 MB"}
+
+
+def test_jq_timeout_kills_endless_filter():
+    t = time.time()
+    r = coolapi.run_jq({"filter": "def f: f; f", "text": "1"}, timeout=0.5)
+    assert r == {"out": [], "error": "filter timed out after 0.5 s"}
+    assert time.time() - t < 3
 
 
 if __name__ == "__main__":
